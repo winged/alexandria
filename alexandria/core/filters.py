@@ -4,7 +4,7 @@ from operator import or_
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchHeadline, SearchQuery, SearchRank
-from django.db.models import F, FloatField, Q, TextField, Value
+from django.db.models import Exists, F, FloatField, OuterRef, Q, TextField, Value
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import Cast
 from django_filters import (
@@ -169,16 +169,42 @@ class FileFilterSet(FilterSet):
     document_metainfo = JSONValueFilter(field_name="document__metainfo")
     active_group = ActiveGroupFilter()
     files = BaseCSVFilter(field_name="pk", lookup_expr="in")
+    only_newest = BooleanFilter(method="filter_only_newest")
+
+    def filter_only_newest(self, qs, name, value):
+        if value:
+            return qs.exclude(
+                Exists(
+                    # Find all newer versions of a file. A newer version is a file:
+                    #  - of the same variant
+                    #  - with a different ID (obviously)
+                    #  - a newer created_at timestamp
+                    #  - AND the same document
+                    models.File.objects.all()
+                    .filter(
+                        document=OuterRef("document_id"),
+                        created_at__gt=OuterRef("created_at"),
+                        variant=OuterRef("variant"),
+                    )
+                    .exclude(pk=OuterRef("pk")),
+                )
+            )
+        return qs
 
     class Meta:
         model = models.File
-        fields = ["original", "renderings", "variant", "metainfo", "files"]
+        fields = [
+            "original",
+            "renderings",
+            "variant",
+            "metainfo",
+            "files",
+            "only_newest",
+        ]
 
 
 class SearchFilterSet(FileFilterSet):
     query = CharFilter(method="search_files")
-
-    only_newest = BooleanFilter(method="filter_only_newest")
 
     # Cut-off value, we don't want all the garbage matches
     min_rank = NumberFilter(field_name="search_rank", lookup_expr="gte")
